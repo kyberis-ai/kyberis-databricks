@@ -118,7 +118,14 @@ def ok_assessment_item(index, urgency="act_now", score=87.5):
             },
             "recommended_actions": ["block"],
             "caveats": ["single-source"],
-            "metadata": {"degraded": False},
+            "evidence_refs": [{"id": "S0543", "type": "cmdb_software"}, {"id": "1.2.3.4"}],
+            "metadata": {
+                "degraded": False,
+                "attributions": ["Molerats", "S0543"],
+                "ioc_mitre_techniques": ["T1566.001", "T1140"],
+                "target_industries": ["Bank"],
+                "ioc_state": "NEW",
+            },
         },
     }
 

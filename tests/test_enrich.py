@@ -106,7 +106,31 @@ class TestAssessIocs:
         assert row["entity_type"] == "ip"
         assert row["recommended_actions"] == ["block"]
         assert row["caveats"] == ["single-source"]
+        assert row["degraded"] is False
         assert row["degraded_reasons"] is None
+
+    def test_enrichment_metadata_surfaces(self, fake_client):
+        """Attribution and MITRE data live in metadata, not the scored fields,
+        and must reach their own columns rather than only the raw blob."""
+        fake_client.enqueue(200, batch_body([ok_assessment_item(0)]))
+        row = assess_iocs(fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE)[0]
+
+        assert row["attributions"] == ["Molerats", "S0543"]
+        assert row["mitre_techniques"] == ["T1566.001", "T1140"]
+        assert row["target_industries"] == ["Bank"]
+        assert row["ioc_state"] == "NEW"
+        assert row["evidence_refs"] == ["S0543 (cmdb_software)", "1.2.3.4"]
+
+    def test_degraded_reasons_not_gated_by_flag(self, fake_client):
+        """Reasons must surface even when the flag is absent or false —
+        gating them behind `degraded` silently drops them."""
+        item = ok_assessment_item(0)
+        item["result"]["metadata"] = {"degraded_reasons": ["partial source outage"]}
+        fake_client.enqueue(200, batch_body([item]))
+        row = assess_iocs(fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE)[0]
+
+        assert row["degraded"] is None
+        assert row["degraded_reasons"] == ["partial source outage"]
 
     def test_item_shape(self, fake_client):
         fake_client.enqueue(200, batch_body([ok_assessment_item(0)]))
@@ -114,8 +138,19 @@ class TestAssessIocs:
         call = fake_client.calls[0]
         assert call["endpoint"] == "/v2/assessments/batch"
         assert call["payload"]["items"] == [
-            {"assessment_type": "ioc_assessment", "payload": {"query": "1.2.3.4"}}
+            {
+                "assessment_type": "ioc_assessment",
+                "payload": {"query": "1.2.3.4", "options": {"detail_level": "standard"}},
+            }
         ]
+
+    def test_detail_level_can_be_omitted(self, fake_client):
+        fake_client.enqueue(200, batch_body([ok_assessment_item(0)]))
+        assess_iocs(
+            fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE, detail_level=None
+        )
+        payload = fake_client.calls[0]["payload"]["items"][0]["payload"]
+        assert payload == {"query": "1.2.3.4"}
 
 
 class TestFailureSemantics:

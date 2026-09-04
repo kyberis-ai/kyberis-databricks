@@ -66,11 +66,23 @@ IOC_ASSESSMENT_COLUMNS = (
     "resolution_status",
     "entity",
     "entity_type",
+    "attributions",
+    "mitre_techniques",
+    "target_industries",
+    "ioc_state",
     "recommended_actions",
     "caveats",
+    "evidence_refs",
+    "degraded",
     "degraded_reasons",
     "raw",
 )
+
+# The API defaults ioc_assessment to "brief", which caps both recommended
+# actions and evidence refs at two. Two slots apiece is thin for a table meant
+# to be triaged, so ask for "standard" — four and four, and a wider per-field
+# character budget.
+DEFAULT_ASSESS_DETAIL_LEVEL = "standard"
 
 AuthProvider = Union[str, Callable[[], str]]
 
@@ -153,15 +165,22 @@ def assess_iocs(
     requested_outcome: str = DEFAULT_ASSESS_OUTCOME,
     run_id: str | None = None,
     stop_on_error: bool = False,
+    detail_level: str | None = DEFAULT_ASSESS_DETAIL_LEVEL,
 ) -> list[dict]:
     """Assess a bounded list of IOCs (IPs, domains, URLs, hashes, emails).
 
     Returns one row per distinct non-empty IOC, columns
     :data:`IOC_ASSESSMENT_COLUMNS`.
+
+    ``detail_level`` is passed through as ``payload.options.detail_level``
+    ("brief", "standard", or "deep"); pass ``None`` to accept the API default.
     """
 
     def make_item(value: str) -> dict:
-        return {"assessment_type": "ioc_assessment", "payload": {"query": value}}
+        payload: dict = {"query": value}
+        if detail_level:
+            payload["options"] = {"detail_level": detail_level}
+        return {"assessment_type": "ioc_assessment", "payload": payload}
 
     def row_from_item(value: str, item: dict) -> dict:
         row = _empty_row(IOC_ASSESSMENT_COLUMNS, "ioc", value)
@@ -186,11 +205,20 @@ def assess_iocs(
         row["resolution_status"] = _text(resolution.get("status"))
         row["entity"] = _text(resolution.get("canonical_name") or resolution.get("canonical_id"))
         row["entity_type"] = _text(resolution.get("entity_type"))
+        # Enrichment lives in metadata, not in the scored fields above: an
+        # indicator can carry actor attribution and MITRE techniques while
+        # still scoring "monitor". Surface both so a row can be judged.
+        row["attributions"] = _string_list(metadata.get("attributions"))
+        row["mitre_techniques"] = _string_list(metadata.get("ioc_mitre_techniques"))
+        row["target_industries"] = _string_list(metadata.get("target_industries"))
+        row["ioc_state"] = _text(metadata.get("ioc_state"))
         row["recommended_actions"] = _string_list(result.get("recommended_actions"))
         row["caveats"] = _string_list(result.get("caveats"))
-        row["degraded_reasons"] = (
-            _string_list(metadata.get("degraded_reasons")) if metadata.get("degraded") else None
-        )
+        row["evidence_refs"] = _evidence_ref_list(result.get("evidence_refs"))
+        # Reported independently of each other: a degraded result does not
+        # always carry reasons, and reasons must not be hidden behind the flag.
+        row["degraded"] = bool(metadata.get("degraded")) if "degraded" in metadata else None
+        row["degraded_reasons"] = _string_list(metadata.get("degraded_reasons"))
         row["raw"] = _dump(result)
         return row
 
@@ -381,6 +409,22 @@ def _string_list(value: Any) -> list[str] | None:
     if isinstance(value, list) and value:
         return [str(entry) for entry in value]
     return None
+
+
+def _evidence_ref_list(value: Any) -> list[str] | None:
+    """Flatten ``[{"id": ..., "type": ...}]`` refs into display strings."""
+    if not isinstance(value, list) or not value:
+        return None
+    refs: list[str] = []
+    for entry in value:
+        if isinstance(entry, dict):
+            ref_id = str(entry.get("id") or "").strip()
+            ref_type = str(entry.get("type") or "").strip()
+            if ref_id:
+                refs.append(f"{ref_id} ({ref_type})" if ref_type else ref_id)
+        elif entry:
+            refs.append(str(entry))
+    return refs or None
 
 
 def _dump(value: Any) -> str | None:
