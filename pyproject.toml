@@ -1,0 +1,30 @@
+[project]
+name = "kyberis-databricks"
+version = "0.1.0"
+description = "Kyberis threat intelligence for Databricks: enrichment helpers, example notebooks, and a Databricks App"
+readme = "README.md"
+# Databricks Runtime 13.3 LTS+ ships Python 3.10; Databricks Apps runs 3.11.
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+# Only the Databricks App needs these; the helper package and notebooks are
+# stdlib-only (kyberis_core is vendored, dependency-free by design).
+app = ["streamlit>=1.38,<2"]
+
+[dependency-groups]
+dev = ["pytest>=8.3.0"]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The wheel ships both our package and the vendored client as top-level
+# packages, so `%pip install kyberis_databricks-<ver>.whl` is all a
+# notebook/cluster needs.
+packages = ["src/kyberis_databricks", "vendor/kyberis_core"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "vendor"]
+testpaths = ["tests"]

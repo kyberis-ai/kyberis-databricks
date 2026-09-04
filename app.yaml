@@ -1,0 +1,23 @@
+# Databricks App entry point. The repo root is the app source root, so one
+# checkout serves the app, the notebooks, and the helper package without
+# duplicating code.
+#
+# The two valueFrom names below are app *resource* keys: when creating the
+# app, add two Secret resources named kyberis-api-key-id and
+# kyberis-api-key-secret pointing at your Kyberis secret scope keys
+# (docs/credentials.md). The app process then sees them only as env vars —
+# no secret values ever live in this file or in the workspace files.
+command: ["streamlit", "run", "app/app.py"]
+
+env:
+  - name: KYBERIS_API_KEY_ID
+    valueFrom: kyberis-api-key-id
+  - name: KYBERIS_API_KEY_SECRET
+    valueFrom: kyberis-api-key-secret
+  # Optional override; defaults to https://api.kyberis.ai in code.
+  # - name: KYBERIS_API_BASE_URL
+  #   value: "https://api.kyberis.ai"
+  - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+    value: "false"
+  - name: STREAMLIT_SERVER_HEADLESS
+    value: "true"

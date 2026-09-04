@@ -1,0 +1,3 @@
+# Installed by Databricks Apps at deploy time. The Kyberis client and helper
+# package are vendored in-repo (vendor/, src/) and need no installation.
+streamlit>=1.38,<2
