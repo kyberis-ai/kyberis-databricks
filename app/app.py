@@ -172,6 +172,21 @@ with lookup_tab:
             column_c.metric("Environment threat", str(signals.get("environment_threat") or "—"))
             column_d.metric("Action confidence", str(signals.get("action_confidence") or "—"))
 
+            # Attribution and MITRE context live under metadata, not in the
+            # scored fields above — without them the panel reads as generic.
+            metadata = assessment_body.get("metadata") if isinstance(assessment_body.get("metadata"), dict) else {}
+            for label, key in (
+                ("Attribution", "attributions"),
+                ("MITRE techniques", "ioc_mitre_techniques"),
+                ("Target industries", "target_industries"),
+            ):
+                values = metadata.get(key)
+                if isinstance(values, list) and values:
+                    st.markdown(f"**{label}:** {', '.join(str(value) for value in values)}")
+            ioc_state = str(metadata.get("ioc_state") or "")
+            if ioc_state:
+                st.markdown(f"**Indicator state:** {ioc_state}")
+
             for label, key in (("Recommended actions", "recommended_actions"), ("Caveats", "caveats")):
                 values = assessment_body.get(key)
                 if isinstance(values, list) and values:
