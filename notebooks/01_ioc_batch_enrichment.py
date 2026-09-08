@@ -127,7 +127,14 @@ display(enriched.drop("raw"))
 
 output_table = dbutils.widgets.get("output_table").strip()
 if output_table:
-    enriched.write.mode("overwrite").saveAsTable(output_table)
+    # overwriteSchema replaces the table's schema along with its rows. Without
+    # it, a table written by an older version of this notebook rejects the
+    # write with DELTA_METADATA_MISMATCH once the column set changes, and the
+    # only way forward is to drop the table by hand. Each run of this notebook
+    # replaces the output table wholesale, so the schema should follow.
+    enriched.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
+        output_table
+    )
     print(f"Wrote {enriched.count()} rows to {output_table}")
 else:
     print("No output_table set — results displayed only.")
