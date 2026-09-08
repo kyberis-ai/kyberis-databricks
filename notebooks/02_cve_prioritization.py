@@ -95,10 +95,15 @@ if top_cve:
                 run_id=run_id,
                 step_id="cve-assess",
             ),
+            # cve_assessment takes only agent_context, subject and query.
+            # Environment context belongs to environment_assessment; sending it
+            # here is rejected with unknown_fields.
             "query": top_cve,
-            "environment_context": environment,
         },
         auth_header=session.auth_header(),
+    )
+    assert assessment.status_code == 200, (
+        f"cve_assessment({top_cve}) failed: HTTP {assessment.status_code}: {assessment.body}"
     )
     print(f"cve_assessment({top_cve}) -> HTTP {assessment.status_code}")
     print(json.dumps(assessment.body, indent=2, default=str))
