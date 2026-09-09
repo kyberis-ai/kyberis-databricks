@@ -268,11 +268,19 @@ def _run_batched(
     transport_failures = 0
     stopped: tuple[str, str] | None = None
 
-    for chunk_index, start in enumerate(range(0, len(pending), BATCH_MAX_ITEMS), start=1):
-        chunk = pending[start : start + BATCH_MAX_ITEMS]
+    # Chunks start at BATCH_MAX_ITEMS and shrink if the plan caps batches lower
+    # (see the batch_limit_exceeded handling below).
+    batch_size = BATCH_MAX_ITEMS
+    chunk_index = 0
+    start = 0
+
+    while start < len(pending):
+        chunk_index += 1
+        chunk = pending[start : start + batch_size]
 
         if stopped is not None:
             rows.extend(_annotate(columns, value_column, chunk, *stopped))
+            start += len(chunk)
             continue
 
         payload = {
@@ -300,40 +308,54 @@ def _run_batched(
             if transport_failures >= _TRANSPORT_FAILURE_LIMIT:
                 stopped = ("transport_error", message)
             rows.extend(_annotate(columns, value_column, chunk, "transport_error", message))
+            start += len(chunk)
             continue
 
         transport_failures = 0
         body = response.body if isinstance(response.body, dict) else {}
 
+        # A plan denial can name itself in any of error_code, message or
+        # reason, and they disagree: a batch cap arrives as
+        # error_code=batch_limit_exceeded with message=plan_limit_exceeded.
+        # Scan all three rather than the first one that happens to be set.
+        markers = " ".join(
+            str(body.get(key) or "") for key in ("error_code", "message", "reason")
+        )
+
+        # A batch cap is not fatal: the response says what the plan allows, so
+        # shrink the chunk and re-send the same items rather than failing a job
+        # the API just told us how to run.
+        if response.status_code == 403 and "batch_limit" in markers:
+            allowed = body.get("max_items")
+            try:
+                allowed = int(allowed)
+            except (TypeError, ValueError):
+                allowed = 0
+            if 0 < allowed < batch_size:
+                batch_size = allowed
+                continue
+
         # 402 is the credit/billing precheck; 403 doubles as a plan-capability
-        # denial (error_code plan_limit_exceeded) — only a plain 403 means bad
-        # credentials.
+        # denial — only a 403 naming neither means bad credentials.
         plan_limited = response.status_code == 402 or (
             response.status_code == 403
-            and "plan_limit" in str(body.get("error_code") or body.get("message") or "")
+            and ("plan_limit" in markers or "batch_limit" in markers)
         )
         if plan_limited:
             message = _error_message(body, "Kyberis plan limit reached") + (
                 f" (HTTP {response.status_code})"
             )
-            rows.extend(_annotate(columns, value_column, chunk, "plan_limit", message))
-            for later_start in range(start + BATCH_MAX_ITEMS, len(pending), BATCH_MAX_ITEMS):
-                rows.extend(
-                    _annotate(
-                        columns,
-                        value_column,
-                        pending[later_start : later_start + BATCH_MAX_ITEMS],
-                        "plan_limit",
-                        message,
-                    )
-                )
+            rows.extend(
+                _annotate(columns, value_column, pending[start:], "plan_limit", message)
+            )
             raise KyberisPlanLimitError(message, rows)
 
         if response.status_code in (401, 403):
             raise KyberisAuthError(
                 "The Kyberis API rejected the configured credentials "
                 f"(HTTP {response.status_code}). Check the API key in your "
-                "Databricks secret scope / app resources."
+                "Databricks secret scope / app resources. "
+                f"API said: {_error_message(body, 'no detail returned')}"
             )
 
         if response.status_code != 200 or not isinstance(response.body, dict):
@@ -341,6 +363,7 @@ def _run_batched(
                 response.body, f"Kyberis API error (HTTP {response.status_code})"
             )
             rows.extend(_annotate(columns, value_column, chunk, "error", message))
+            start += len(chunk)
             continue
 
         # Items echo their request position as "index"; map by that rather
@@ -356,6 +379,8 @@ def _run_batched(
                     pass
         for index, value in enumerate(chunk):
             rows.append(row_from_item(value, by_index.get(index, {})))
+
+        start += len(chunk)
 
     return rows
 
