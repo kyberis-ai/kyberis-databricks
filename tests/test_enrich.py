@@ -176,6 +176,53 @@ class TestFailureSemantics:
         with pytest.raises(KyberisPlanLimitError):
             assess_iocs(fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE)
 
+    def test_batch_cap_reported_as_batch_limit_is_not_an_auth_error(self, fake_client):
+        # The real API names a batch cap error_code=batch_limit_exceeded with
+        # message=plan_limit_exceeded, and gives no max_items we can shrink to.
+        fake_client.enqueue(
+            403,
+            {
+                "error_code": "batch_limit_exceeded",
+                "message": "plan_limit_exceeded",
+                "reason": "batch_limit_exceeded",
+                "plan_code": "dev",
+            },
+        )
+        with pytest.raises(KyberisPlanLimitError):
+            assess_iocs(fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE)
+
+    def test_batch_cap_reshrinks_chunks_and_completes(self, fake_client):
+        iocs = [f"10.0.0.{i}" for i in range(12)]
+        # First call sends all 12 and is refused with the plan's real cap.
+        fake_client.enqueue(
+            403,
+            {
+                "error_code": "batch_limit_exceeded",
+                "message": "plan_limit_exceeded",
+                "max_items": 5,
+                "requested_items": 12,
+            },
+        )
+        # It should then re-send the same items in chunks of five: 5, 5, 2.
+        fake_client.enqueue(200, batch_body([ok_assessment_item(i) for i in range(5)]))
+        fake_client.enqueue(200, batch_body([ok_assessment_item(i) for i in range(5)]))
+        fake_client.enqueue(200, batch_body([ok_assessment_item(i) for i in range(2)]))
+
+        rows = assess_iocs(fake_client, "ApiKey k:s", iocs, objective=OBJECTIVE)
+
+        assert len(rows) == 12
+        assert all(row["status"] == "ok" for row in rows)
+        sent = [len(call["payload"]["items"]) for call in fake_client.calls]
+        assert sent == [12, 5, 5, 2]
+        # No input is dropped or duplicated by the re-chunking.
+        assert [row["ioc"] for row in rows] == iocs
+
+    def test_auth_error_includes_the_api_detail(self, fake_client):
+        fake_client.enqueue(401, {"message": "bad key", "error_code": "unauthorized"})
+        with pytest.raises(KyberisAuthError) as excinfo:
+            assess_iocs(fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE)
+        assert "bad key" in str(excinfo.value)
+
     def test_transport_error_annotates_chunk_and_continues(self, fake_client):
         queries = [f"10.0.0.{i}" for i in range(51)]
         fake_client.transport_error()
