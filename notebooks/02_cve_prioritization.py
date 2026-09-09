@@ -12,7 +12,7 @@
 dbutils.widgets.text("secret_scope", "kyberis", "Secret scope")
 dbutils.widgets.text("industry", "financial services", "Industry")
 dbutils.widgets.text("products", "Cisco ASA, Palo Alto PAN-OS, Microsoft Exchange", "Products (comma-separated)")
-dbutils.widgets.text("geography", "United States", "Geography")
+dbutils.widgets.text("geography", "United States", "Geographies (comma-separated)")
 dbutils.widgets.text("time_window_days", "30", "Time window (days)")
 
 # COMMAND ----------
@@ -41,7 +41,11 @@ run_id = new_run_id("prio")
 environment = {
     "industry": dbutils.widgets.get("industry"),
     "products": [product.strip() for product in dbutils.widgets.get("products").split(",") if product.strip()],
-    "geography": dbutils.widgets.get("geography"),
+    # The API takes geography as a list, like products — a bare string is
+    # rejected with invalid_request_body.
+    "geography": [
+        place.strip() for place in dbutils.widgets.get("geography").split(",") if place.strip()
+    ],
 }
 
 response = client.call_tool(
@@ -91,10 +95,15 @@ if top_cve:
                 run_id=run_id,
                 step_id="cve-assess",
             ),
+            # cve_assessment takes only agent_context, subject and query.
+            # Environment context belongs to environment_assessment; sending it
+            # here is rejected with unknown_fields.
             "query": top_cve,
-            "environment_context": environment,
         },
         auth_header=session.auth_header(),
+    )
+    assert assessment.status_code == 200, (
+        f"cve_assessment({top_cve}) failed: HTTP {assessment.status_code}: {assessment.body}"
     )
     print(f"cve_assessment({top_cve}) -> HTTP {assessment.status_code}")
     print(json.dumps(assessment.body, indent=2, default=str))
