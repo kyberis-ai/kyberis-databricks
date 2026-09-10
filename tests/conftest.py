@@ -58,9 +58,28 @@ class FakeClock:
         self.now += seconds
 
 
+class RecordingSleep:
+    """Captures the waits the retry path asks for, without performing them."""
+
+    def __init__(self):
+        self.waits: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.waits.append(float(seconds))
+
+
 @pytest.fixture
 def fake_client():
     return FakeClient()
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    from kyberis_databricks import enrich
+
+    recorder = RecordingSleep()
+    monkeypatch.setattr(enrich, "_sleep", recorder)
+    return recorder
 
 
 @pytest.fixture
