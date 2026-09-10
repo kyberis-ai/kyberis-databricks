@@ -193,7 +193,13 @@ def resolve_entities(
         row["canonical_id"] = _text(resolution.get("canonical_id"))
         row["canonical_name"] = _text(resolution.get("canonical_name"))
         row["entity_type"] = _text(resolution.get("entity_type"))
-        row["confidence"] = _number(resolution.get("confidence"))
+        # The API names this resolution_confidence; it has never sent a plain
+        # "confidence" here. Reading the wrong key left this column silently
+        # null in every run, and the fixture that should have caught it
+        # asserted the invented name too.
+        row["confidence"] = _number(
+            resolution.get("resolution_confidence", resolution.get("confidence"))
+        )
         row["raw"] = _dump(result)
         return row
 

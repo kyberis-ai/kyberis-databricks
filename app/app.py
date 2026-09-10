@@ -166,7 +166,9 @@ with lookup_tab:
             column_a.metric("Resolution", resolution_status)
             column_b.metric("Entity type", entity_type or "—")
             column_c.metric("Canonical", str(resolution.get("canonical_name") or resolution.get("canonical_id") or "—"))
-            confidence = resolution.get("confidence")
+            # resolution_confidence is the API's name for this; reading
+            # "confidence" rendered an em dash on every lookup.
+            confidence = resolution.get("resolution_confidence", resolution.get("confidence"))
             column_d.metric("Confidence", f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "—")
 
             if resolution_status == "ambiguous":
