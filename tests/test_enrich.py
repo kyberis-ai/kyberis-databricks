@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import batch_body, error_item, ok_assessment_item, ok_resolution_item
+from conftest import (
+    batch_body,
+    error_item,
+    not_found_resolution_item,
+    ok_assessment_item,
+    ok_resolution_item,
+)
 from kyberis_databricks.auth import KyberisAuthError
 from kyberis_databricks.enrich import (
     BATCH_MAX_ITEMS,
@@ -31,7 +37,7 @@ class TestResolveEntities:
             batch_body(
                 [
                     ok_resolution_item(0, canonical_id="ent-apt29", entity_type="actor"),
-                    error_item(1, message="unresolvable"),
+                    error_item(1, message="entity_not_resolved"),
                 ]
             ),
         )
@@ -42,10 +48,40 @@ class TestResolveEntities:
         assert rows[0]["status"] == "ok"
         assert rows[0]["canonical_id"] == "ent-apt29"
         assert rows[0]["entity_type"] == "actor"
-        assert rows[0]["confidence"] == pytest.approx(0.93)
+        # Reads resolution_confidence, the name the API actually sends. Asserting
+        # the invented "confidence" here is what let the null column ship.
+        assert rows[0]["confidence"] == pytest.approx(1.0)
         assert json.loads(rows[0]["raw"])["resolution"]["canonical_id"] == "ent-apt29"
         assert rows[1]["status"] == "error"
-        assert "unresolvable" in rows[1]["message"]
+        assert "entity_not_resolved" in rows[1]["message"]
+
+    def test_unresolved_query_is_an_ok_row_not_an_error(self, fake_client):
+        """The API answers an unresolvable query with item status **ok** and
+        resolution.status "not_found" -- looking and finding nothing is a
+        result. Only a genuine failure gets item status "error", so treating
+        not_found as an error would mislabel a normal outcome."""
+        fake_client.enqueue(200, batch_body([not_found_resolution_item(0, query="no-such-thing")]))
+
+        row = resolve_entities(fake_client, "ApiKey k:s", ["no-such-thing"], objective=OBJECTIVE)[0]
+
+        assert row["status"] == "ok"
+        assert row["resolution_status"] == "not_found"
+        assert row["canonical_id"] is None
+        assert row["entity_type"] is None
+        assert row["confidence"] == pytest.approx(0.0)
+
+    def test_confidence_reads_the_field_the_api_actually_sends(self, fake_client):
+        """Regression guard. The API sends resolution_confidence; the connector
+        read "confidence" and so returned null for every row, and the fixture
+        asserted the invented name, so the suite agreed with the bug."""
+        item = ok_resolution_item(0, confidence=0.82)
+        assert "confidence" not in item["result"]["resolution"]
+        assert item["result"]["resolution"]["resolution_confidence"] == 0.82
+        fake_client.enqueue(200, batch_body([item]))
+
+        row = resolve_entities(fake_client, "ApiKey k:s", ["APT29"], objective=OBJECTIVE)[0]
+
+        assert row["confidence"] == pytest.approx(0.82)
 
     def test_payload_shape_and_agent_context(self, fake_client):
         fake_client.enqueue(200, batch_body([ok_resolution_item(0)]))
@@ -104,15 +140,21 @@ class TestAssessIocs:
         row = rows[0]
         assert set(row) == set(IOC_ASSESSMENT_COLUMNS)
         assert row["status"] == "ok"
-        assert row["urgency"] == "act_now"
-        assert row["score"] == pytest.approx(87.5)
-        assert row["threat"] == "high"
+        assert row["urgency"] == "this_week"
+        # ranking_score is 0-1, not 0-100. The old fixture said 87.5, which no
+        # response has ever contained.
+        assert row["score"] == pytest.approx(0.77)
+        assert row["threat"] == "medium"
         assert row["action_confidence"] == "medium"
-        assert row["confidence"] == pytest.approx(0.8)
-        assert row["entity"] == "1.2.3.4"
+        assert row["confidence"] == pytest.approx(0.65)
+        assert row["entity"] == "185.244.39.165"
         assert row["entity_type"] == "ip"
-        assert row["recommended_actions"] == ["block"]
-        assert row["caveats"] == ["single-source"]
+        assert row["recommended_actions"][0].startswith("Prioritize detections for MITRE")
+        # The API sends caveats: [] on a clean assessment, and _string_list
+        # normalises empty to None so Delta gets a null rather than an empty
+        # array. The old fixture always carried a caveat, so this path had
+        # never been exercised.
+        assert row["caveats"] is None
         assert row["degraded"] is False
         assert row["degraded_reasons"] is None
 
@@ -122,11 +164,11 @@ class TestAssessIocs:
         fake_client.enqueue(200, batch_body([ok_assessment_item(0)]))
         row = assess_iocs(fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE)[0]
 
-        assert row["attributions"] == ["Molerats", "S0543"]
-        assert row["mitre_techniques"] == ["T1566.001", "T1140"]
-        assert row["target_industries"] == ["Bank"]
+        assert row["attributions"] == ["Molerats", "Molerats - G0021", "S0543", "DCSO"]
+        assert row["mitre_techniques"] == ["T1140", "T1113", "T1005"]
+        assert row["target_industries"] == ["Bank", "Journalist"]
         assert row["ioc_state"] == "NEW"
-        assert row["evidence_refs"] == ["S0543 (cmdb_software)", "1.2.3.4"]
+        assert row["evidence_refs"] == ["S0543 (cmdb_software)", "185.244.39.165 (ioc)"]
 
     def test_degraded_reasons_not_gated_by_flag(self, fake_client):
         """Reasons must surface even when the flag is absent or false —
