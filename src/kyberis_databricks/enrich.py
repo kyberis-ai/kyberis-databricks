@@ -12,6 +12,10 @@ Failure semantics:
 - 402 / plan-limit responses stop further API calls; the remaining rows are
   annotated ``status="plan_limit"`` and :class:`KyberisPlanLimitError` is
   raised with the completed rows attached as ``error.rows``.
+- 429 (plan request-rate limit) is transient, not a denial: the chunk is
+  re-sent after waiting the window named by the response. If the throttle
+  outlasts a small retry budget, no further calls are made and the remaining
+  rows are annotated ``status="rate_limited"``.
 - Transport failures annotate the chunk ``status="transport_error"``; after
   two consecutive failing chunks no further calls are made.
 - Any other HTTP error annotates the chunk ``status="error"``.
@@ -23,6 +27,7 @@ row whose ``status`` says what happened — batch jobs never lose partial work.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable, Iterable, Union
 
 from kyberis_core import KyberisClient, KyberisClientError
@@ -35,6 +40,16 @@ BATCH_MAX_ITEMS = 50
 # Consecutive whole-chunk transport failures before we stop calling the API
 # (keeps a dead network from adding retry latency to every remaining chunk).
 _TRANSPORT_FAILURE_LIMIT = 2
+
+# Consecutive 429s on one chunk before we give up on it and stop calling.
+# The API's retry_after names the exact moment its window reopens, so one
+# wait per window normally suffices; this budget only guards against a key
+# held down by other traffic on the same account.
+_RATE_LIMIT_RETRY_LIMIT = 3
+
+# Bounds on how long we will wait, in case retry_after is absent or absurd.
+_RATE_LIMIT_MAX_SLEEP_SECONDS = 120.0
+_RATE_LIMIT_DEFAULT_SLEEP_SECONDS = 60.0
 
 ENTITY_RESOLUTION_BATCH_ENDPOINT = "/v2/entity-resolution/batch"
 ASSESSMENTS_BATCH_ENDPOINT = "/v2/assessments/batch"
@@ -273,6 +288,7 @@ def _run_batched(
     batch_size = BATCH_MAX_ITEMS
     chunk_index = 0
     start = 0
+    rate_limit_retries = 0
 
     while start < len(pending):
         chunk_index += 1
@@ -335,6 +351,27 @@ def _run_batched(
                 batch_size = allowed
                 continue
 
+        # A 429 is a throttle, not a denial: the plan's request rate ran out
+        # and the response says when it resets. Re-send the same chunk rather
+        # than consuming it. Keyed on the status code and not the body,
+        # because a 429 carries message="plan_limit_exceeded" — the very
+        # marker a real plan denial uses — so matching that text here would
+        # turn a wait-and-retry into a fatal error.
+        if response.status_code == 429:
+            rate_limit_retries += 1
+            if rate_limit_retries <= _RATE_LIMIT_RETRY_LIMIT:
+                _sleep(_retry_after_seconds(body))
+                continue
+            message = (
+                _error_message(body, "Kyberis API request rate limit reached")
+                + f" (HTTP 429, still throttled after {_RATE_LIMIT_RETRY_LIMIT} waits)"
+            )
+            stopped = ("rate_limited", message)
+            rows.extend(_annotate(columns, value_column, chunk, *stopped))
+            start += len(chunk)
+            continue
+        rate_limit_retries = 0
+
         # 402 is the credit/billing precheck; 403 doubles as a plan-capability
         # denial — only a 403 naming neither means bad credentials.
         plan_limited = response.status_code == 402 or (
@@ -383,6 +420,29 @@ def _run_batched(
         start += len(chunk)
 
     return rows
+
+
+def _sleep(seconds: float) -> None:
+    """Indirection so tests can exercise the retry path without waiting."""
+    time.sleep(seconds)
+
+
+def _retry_after_seconds(body: dict) -> float:
+    """How long to wait before re-sending a rate-limited chunk.
+
+    The API derives ``retry_after_seconds`` from a fixed tumbling window, so
+    it names exactly when the next window opens: honouring it wastes no time
+    and needs no backoff curve of our own. ``window_seconds`` is the fallback
+    when only the window width came back.
+    """
+    for key in ("retry_after_seconds", "window_seconds"):
+        try:
+            value = float(body.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return min(value, _RATE_LIMIT_MAX_SLEEP_SECONDS)
+    return _RATE_LIMIT_DEFAULT_SLEEP_SECONDS
 
 
 def _auth_header(auth: AuthProvider) -> str:

@@ -13,6 +13,11 @@ from kyberis_databricks.enrich import (
     assess_iocs,
     resolve_entities,
 )
+from kyberis_databricks.enrich import (
+    _RATE_LIMIT_DEFAULT_SLEEP_SECONDS,
+    _RATE_LIMIT_MAX_SLEEP_SECONDS,
+    _RATE_LIMIT_RETRY_LIMIT,
+)
 
 OBJECTIVE = "Enrich detection IOC table with Kyberis verdicts"
 
@@ -216,6 +221,104 @@ class TestFailureSemantics:
         assert sent == [12, 5, 5, 2]
         # No input is dropped or duplicated by the re-chunking.
         assert [row["ioc"] for row in rows] == iocs
+
+    def test_rate_limited_chunk_waits_and_is_re_sent_not_dropped(self, fake_client, no_sleep):
+        # The real 429 body: reason names the condition, message reuses the
+        # same "plan_limit_exceeded" marker a genuine plan denial sends.
+        iocs = [f"10.0.0.{i}" for i in range(10)]
+        fake_client.enqueue(
+            429,
+            {
+                "error": "plan_limit_exceeded",
+                "message": "plan_limit_exceeded",
+                "reason": "rate_limit_exceeded",
+                "plan_code": "dev",
+                "limit": 10,
+                "window_seconds": 60,
+                "retry_after_seconds": 53,
+            },
+        )
+        fake_client.enqueue(200, batch_body([ok_assessment_item(i) for i in range(10)]))
+
+        rows = assess_iocs(fake_client, "ApiKey k:s", iocs, objective=OBJECTIVE, run_id="job-1")
+
+        # Every input still enriched: the throttled chunk was re-sent, not consumed.
+        assert len(rows) == 10
+        assert all(row["status"] == "ok" for row in rows)
+        assert [row["ioc"] for row in rows] == iocs
+        # The retry carries exactly the items the refused request carried.
+        sent = [
+            [item["payload"]["query"] for item in call["payload"]["items"]]
+            for call in fake_client.calls
+        ]
+        assert sent == [iocs, iocs]
+        # It waited exactly as long as the API said, with no backoff curve of its own.
+        assert no_sleep.waits == [53.0]
+
+    def test_rate_limit_is_not_treated_as_a_plan_denial(self, fake_client, no_sleep):
+        # message="plan_limit_exceeded" would match the plan-limit marker scan;
+        # only the status code separates a throttle from a real denial, and a
+        # throttle must not raise.
+        fake_client.enqueue(429, {"message": "plan_limit_exceeded", "retry_after_seconds": 1})
+        fake_client.enqueue(200, batch_body([ok_assessment_item(0)]))
+
+        rows = assess_iocs(fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE)
+
+        assert [row["status"] for row in rows] == ["ok"]
+
+    def test_persistent_rate_limit_stops_calling_and_annotates_the_rest(self, fake_client, no_sleep):
+        # 60 inputs is two chunks: 50 then 10.
+        iocs = [f"10.0.0.{i}" for i in range(60)]
+        throttled = {"message": "plan_limit_exceeded", "reason": "rate_limit_exceeded",
+                     "retry_after_seconds": 60}
+        # The first chunk never clears: the initial call plus the whole budget.
+        for _ in range(_RATE_LIMIT_RETRY_LIMIT + 1):
+            fake_client.enqueue(429, throttled)
+
+        rows = assess_iocs(fake_client, "ApiKey k:s", iocs, objective=OBJECTIVE)
+
+        # Bounded, and it stops calling: the second chunk is annotated without
+        # another request rather than hammering a limit that is not clearing.
+        assert len(fake_client.calls) == _RATE_LIMIT_RETRY_LIMIT + 1
+        assert len(no_sleep.waits) == _RATE_LIMIT_RETRY_LIMIT
+        # Still exactly one row per input — nothing is silently lost.
+        assert len(rows) == 60
+        assert [row["ioc"] for row in rows] == iocs
+        assert all(row["status"] == "rate_limited" for row in rows)
+        assert "rate_limit_exceeded" in rows[0]["message"]
+
+    def test_retry_after_is_clamped_and_defaulted(self, fake_client, no_sleep):
+        # A missing retry_after falls back to the window, then to a default;
+        # an absurd one is capped so a bad field cannot hang a job.
+        for body in ({"window_seconds": 60}, {}, {"retry_after_seconds": 99999}):
+            fake_client.enqueue(429, body)
+            fake_client.enqueue(200, batch_body([ok_assessment_item(0)]))
+            assess_iocs(fake_client, "ApiKey k:s", ["1.2.3.4"], objective=OBJECTIVE)
+
+        assert no_sleep.waits == [60.0, _RATE_LIMIT_DEFAULT_SLEEP_SECONDS,
+                                  _RATE_LIMIT_MAX_SLEEP_SECONDS]
+
+    def test_rate_limit_retry_budget_resets_between_chunks(self, fake_client, no_sleep):
+        # A throttle on one chunk must not count against a later one, or a long
+        # run would die early on a few scattered 429s spread across many chunks.
+        iocs = [f"10.0.0.{i}" for i in range(12)]
+        throttled = {"message": "plan_limit_exceeded", "retry_after_seconds": 5}
+        # Shrink to chunks of five, then throttle each chunk once.
+        fake_client.enqueue(403, {"error_code": "batch_limit_exceeded",
+                                  "message": "plan_limit_exceeded", "max_items": 5})
+        for size in (5, 5, 2):
+            fake_client.enqueue(429, throttled)
+            fake_client.enqueue(200, batch_body([ok_assessment_item(i) for i in range(size)]))
+
+        rows = assess_iocs(fake_client, "ApiKey k:s", iocs, objective=OBJECTIVE)
+
+        assert len(rows) == 12
+        assert all(row["status"] == "ok" for row in rows)
+        assert [row["ioc"] for row in rows] == iocs
+        # Three separate one-wait recoveries, none inheriting the previous streak.
+        assert no_sleep.waits == [5.0, 5.0, 5.0]
+        sent = [len(call["payload"]["items"]) for call in fake_client.calls]
+        assert sent == [12, 5, 5, 5, 5, 2, 2]
 
     def test_auth_error_includes_the_api_detail(self, fake_client):
         fake_client.enqueue(401, {"message": "bad key", "error_code": "unauthorized"})

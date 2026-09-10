@@ -72,9 +72,11 @@ print(f"{len(iocs)} distinct IOCs to enrich")
 
 # COMMAND ----------
 
-# Enriches in batches of up to 50. Every input yields exactly one row whose
-# `status` column says what happened (ok / error / transport_error /
-# plan_limit) — a partially failed run still returns usable rows.
+# Enriches in batches of up to 50, shrinking to the plan's cap if it is lower
+# and waiting out the plan's request-rate window when throttled. Every input
+# yields exactly one row whose `status` column says what happened (ok / error /
+# transport_error / rate_limited / plan_limit) — a partially failed run still
+# returns usable rows.
 run_id = new_run_id("job")
 try:
     rows = assess_iocs(
@@ -88,7 +90,21 @@ except KyberisPlanLimitError as error:
     print(f"Plan limit reached — keeping {len(error.rows)} partial rows: {error}")
     rows = error.rows
 
-print(f"{sum(1 for row in rows if row['status'] == 'ok')}/{len(rows)} enriched (run_id={run_id})")
+ok_count = sum(1 for row in rows if row["status"] == "ok")
+print(f"{ok_count}/{len(rows)} enriched (run_id={run_id})")
+
+# A partly failed run must not read as a success. Summarise the failures by
+# reason, so they are visible in the job output and not only in the `status`
+# column of a table nobody opens.
+if ok_count < len(rows):
+    reasons = {}
+    for row in rows:
+        if row["status"] != "ok":
+            key = (row["status"], (row["message"] or "").split(" (")[0])
+            reasons[key] = reasons.get(key, 0) + 1
+    print(f"{len(rows) - ok_count} row(s) did not enrich:")
+    for (status, message), count in sorted(reasons.items(), key=lambda kv: -kv[1]):
+        print(f"  {count:>5}  {status}: {message}")
 
 # COMMAND ----------
 
@@ -125,6 +141,25 @@ display(enriched.drop("raw"))
 
 # COMMAND ----------
 
+# An indicator Kyberis has nothing on is a real answer, so `error` rows are no
+# reason to refuse the write. These statuses are different: the row was never
+# assessed at all, because of the plan or the network. Overwriting the output
+# table with those in it is how a truncated result comes to look like a
+# complete one — so fail the run instead, after the grid above has rendered
+# for triage.
+truncated = sum(
+    1 for row in rows
+    if row["status"] in ("rate_limited", "plan_limit", "transport_error")
+)
+if truncated:
+    raise RuntimeError(
+        f"{truncated} of {len(rows)} IOCs were never assessed — the run was cut short "
+        "by a plan or network limit, not by missing intelligence. Refusing to overwrite "
+        f"{dbutils.widgets.get('output_table').strip() or 'the output table'} with a "
+        "partial result. See the breakdown above; if it is a rate limit, enrich a "
+        "smaller table or use a plan with a higher request rate."
+    )
+
 output_table = dbutils.widgets.get("output_table").strip()
 if output_table:
     # overwriteSchema replaces the table's schema along with its rows. Without
@@ -148,3 +183,7 @@ else:
 # MAGIC - Schedule this notebook as a job; pass `source_table`/`output_table`
 # MAGIC   as job parameters. Rows with `status != 'ok'` explain themselves —
 # MAGIC   retry `transport_error` rows, review `plan_limit` with your admin.
+# MAGIC - On a plan with a low request rate, a large table takes minutes: the
+# MAGIC   run waits out each rate-limit window rather than dropping rows. If it
+# MAGIC   is still throttled after several waits the run fails instead of
+# MAGIC   writing a partial table.
