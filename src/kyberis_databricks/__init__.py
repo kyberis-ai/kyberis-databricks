@@ -20,9 +20,11 @@ from .context import WORKFLOW_STAGES, build_agent_context, new_run_id
 from .enrich import (
     BATCH_MAX_ITEMS,
     IOC_ASSESSMENT_COLUMNS,
+    IOC_ASSESSMENT_DISPLAY_ORDER,
     RESOLUTION_COLUMNS,
     KyberisPlanLimitError,
     assess_iocs,
+    display_order,
     resolve_entities,
 )
 
@@ -38,9 +40,11 @@ __all__ = [
     "new_run_id",
     "BATCH_MAX_ITEMS",
     "IOC_ASSESSMENT_COLUMNS",
+    "IOC_ASSESSMENT_DISPLAY_ORDER",
     "RESOLUTION_COLUMNS",
     "KyberisPlanLimitError",
     "assess_iocs",
+    "display_order",
     "resolve_entities",
 ]
 

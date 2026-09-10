@@ -8,9 +8,11 @@ from kyberis_databricks.auth import KyberisAuthError
 from kyberis_databricks.enrich import (
     BATCH_MAX_ITEMS,
     IOC_ASSESSMENT_COLUMNS,
+    IOC_ASSESSMENT_DISPLAY_ORDER,
     RESOLUTION_COLUMNS,
     KyberisPlanLimitError,
     assess_iocs,
+    display_order,
     resolve_entities,
 )
 from kyberis_databricks.enrich import (
@@ -357,3 +359,43 @@ class TestFailureSemantics:
     def test_empty_input_makes_no_calls(self, fake_client):
         assert resolve_entities(fake_client, "ApiKey k:s", [], objective=OBJECTIVE) == []
         assert fake_client.calls == []
+
+
+class TestDisplayOrder:
+    """The display order is what decides which columns fall off the right edge
+    of a 20-column grid, so it has to stay complete and lossless."""
+
+    def test_covers_every_display_column_exactly_once(self):
+        displayed = [column for column in IOC_ASSESSMENT_COLUMNS if column != "raw"]
+        assert sorted(IOC_ASSESSMENT_DISPLAY_ORDER) == sorted(displayed)
+        assert len(set(IOC_ASSESSMENT_DISPLAY_ORDER)) == len(IOC_ASSESSMENT_DISPLAY_ORDER)
+
+    def test_reorders_without_dropping_or_inventing(self):
+        displayed = [column for column in IOC_ASSESSMENT_COLUMNS if column != "raw"]
+        ordered = display_order(displayed)
+        assert sorted(ordered) == sorted(displayed)
+        assert ordered == list(IOC_ASSESSMENT_DISPLAY_ORDER)
+
+    def test_verdict_and_intelligence_lead_the_diagnostics(self):
+        # The point of the order: an analyst sees the indicator, the verdict and
+        # the evidence for it before any plumbing column.
+        ordered = display_order([c for c in IOC_ASSESSMENT_COLUMNS if c != "raw"])
+        assert ordered[:8] == [
+            "ioc", "urgency", "score", "threat",
+            "attributions", "mitre_techniques", "target_industries", "recommended_actions",
+        ]
+        for plumbing in ("resolution_status", "entity_type", "degraded_reasons"):
+            assert ordered.index(plumbing) > ordered.index("recommended_actions")
+
+    def test_unregistered_columns_survive_at_the_end(self):
+        # A column added to the row builder must still render without having to
+        # be registered in the order first.
+        assert display_order(["zz_new", "ioc", "score"]) == ["ioc", "score", "zz_new"]
+
+    def test_missing_columns_are_not_conjured(self):
+        assert display_order(["score", "ioc"]) == ["ioc", "score"]
+
+    def test_is_idempotent(self):
+        displayed = [column for column in IOC_ASSESSMENT_COLUMNS if column != "raw"]
+        once = display_order(displayed)
+        assert display_order(once) == once

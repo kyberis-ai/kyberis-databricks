@@ -28,6 +28,7 @@ from kyberis_databricks import (
     KyberisPlanLimitError,
     assess_iocs,
     build_agent_context,
+    display_order,
     load_credentials_from_env,
     new_run_id,
 )
@@ -38,6 +39,26 @@ st.set_page_config(page_title="Kyberis Threat Intelligence", page_icon="🛡️"
 DEFAULT_OBJECTIVE = "Interactive threat investigation from the Kyberis Databricks app"
 
 ENTITY_TYPES = ["ip", "domain", "url", "hash", "email", "cve", "actor", "malware", "campaign"]
+
+def _full_width() -> dict:
+    """Kwargs that make a dataframe fill its container, on any allowed Streamlit.
+
+    Streamlit 1.49 replaced ``use_container_width=True`` with
+    ``width="stretch"``, and passing the newer form to an older Streamlit
+    fails with ``TypeError: 'str' object cannot be interpreted as an
+    integer`` — the width goes straight into an int protobuf field.
+    requirements.txt allows ``>=1.38``, and a customer's Databricks Apps
+    runtime may resolve either side of that change, so ask the installed
+    version rather than assuming the newer API.
+    """
+    try:
+        major, minor = (int(part) for part in st.__version__.split(".")[:2])
+    except (AttributeError, TypeError, ValueError):
+        return {"use_container_width": True}
+    return {"width": "stretch"} if (major, minor) >= (1, 49) else {"use_container_width": True}
+
+
+FULL_WIDTH = _full_width()
 
 ASSESSMENT_TOOL_BY_TYPE = {
     "ip": "ioc_assessment",
@@ -231,9 +252,11 @@ with batch_tab:
 
             if rows:
                 frame = pd.DataFrame(rows).drop(columns=["raw"])
+                # Reorder once, so the grid and the CSV keep the same header.
+                frame = frame[display_order(frame.columns)]
                 ok_count = int((frame["status"] == "ok").sum())
                 st.caption(f"{ok_count}/{len(frame)} enriched (status != ok rows explain themselves).")
-                st.dataframe(frame, width="stretch", hide_index=True)
+                st.dataframe(frame, hide_index=True, **FULL_WIDTH)
                 st.download_button(
                     "Download CSV",
                     frame.to_csv(index=False).encode("utf-8"),
