@@ -41,6 +41,7 @@ from kyberis_databricks import (
     BearerTokenSession,
     KyberisPlanLimitError,
     assess_iocs,
+    display_order,
     load_credentials_from_secrets,
     new_run_id,
 )
@@ -137,7 +138,8 @@ schema = T.StructType(
 )
 
 enriched = spark.createDataFrame(rows, schema=schema)
-display(enriched.drop("raw"))
+# Reading order, not storage order — the Delta schema below is unchanged.
+display(enriched.drop("raw").select(*display_order(enriched.drop("raw").columns)))
 
 # COMMAND ----------
 

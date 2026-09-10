@@ -54,6 +54,49 @@ _RATE_LIMIT_DEFAULT_SLEEP_SECONDS = 60.0
 ENTITY_RESOLUTION_BATCH_ENDPOINT = "/v2/entity-resolution/batch"
 ASSESSMENTS_BATCH_ENDPOINT = "/v2/assessments/batch"
 
+# IOC_ASSESSMENT_COLUMNS above is the storage order, and stays as it is: the
+# Delta schema and the CSV header both follow it. This is the order a person
+# reads them in -- identity and verdict, then the intelligence justifying it,
+# then diagnostics. Twenty columns do not fit on a screen at once, so which
+# ones fall off the right edge is a real decision, not a cosmetic one.
+IOC_ASSESSMENT_DISPLAY_ORDER = (
+    "ioc",
+    "urgency",
+    "score",
+    "threat",
+    "attributions",
+    "mitre_techniques",
+    "target_industries",
+    "recommended_actions",
+    # Diagnostics: kept close enough that a failed row is still readable
+    # without scrolling, since its verdict columns will be empty.
+    "status",
+    "message",
+    "ioc_state",
+    "confidence",
+    "action_confidence",
+    "caveats",
+    "resolution_status",
+    "entity",
+    "entity_type",
+    "evidence_refs",
+    "degraded",
+    "degraded_reasons",
+)
+
+
+def display_order(columns: Iterable[str]) -> list[str]:
+    """``columns`` arranged for reading, never dropping or inventing one.
+
+    Anything not named in :data:`IOC_ASSESSMENT_DISPLAY_ORDER` keeps its
+    relative position at the end, so a new column added to the row builder
+    still shows up without having to be registered here first.
+    """
+    present = [str(column) for column in columns]
+    known = [column for column in IOC_ASSESSMENT_DISPLAY_ORDER if column in present]
+    return known + [column for column in present if column not in IOC_ASSESSMENT_DISPLAY_ORDER]
+
+
 DEFAULT_RESOLVE_OUTCOME = "Canonical entity id, type, and confidence per input"
 DEFAULT_ASSESS_OUTCOME = "Per-indicator verdict, score, and context fields"
 
