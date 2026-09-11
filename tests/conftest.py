@@ -286,3 +286,185 @@ def error_item(index, message="entity_not_resolved", status_code=400):
             },
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Intel search fixtures.
+#
+# Captured on 2026-09-11 from POST /v2/intel-search with the query the app's
+# Intel search tab suggests ("ransomware targeting healthcare", 30-day window,
+# max_results 20).
+#
+# /v2/intel-search was the one endpoint no fixture here had ever pinned, and
+# the app read its capsule list as {"results": [...]}. It is {"items": [...]},
+# so every intel search the app ran rendered "No intel capsules matched." The
+# captured envelope keys are exactly
+# ['items', 'max_results', 'metadata', 'query', 'status'], with no 'results'.
+#
+# Two properties of the real bodies that the schema alone does not convey, and
+# that the rendering has to hold up against:
+#
+# - `claim_tags` is free text, not a slug vocabulary: values arrive as vendor
+#   and agency names at mixed casing and full length ("beyondtrust",
+#   "Carbon Black", "Department of Health and Human Services (HHS)").
+# - `abstract_stub` can end mid-sentence, and well under the documented
+#   320-character cap, so length does not tell you whether it was cut.
+#
+# Same rule as the batch fixtures above: if the API changes shape, re-capture
+# rather than hand-editing a body to make a test pass.
+# ---------------------------------------------------------------------------
+
+
+def public_capsule():
+    """A real captured capsule, verbatim.
+
+    `abstract_stub` is the capsule's only prose -- there is no `summary` key,
+    which the app's `result.get("summary")` fallback assumed there was. Note
+    it ends mid-sentence: that is what the API sent, not a trim made here.
+    """
+    return {
+        "report_id": 111737,
+        "report_uuid": "df61b2af-701e-50ef-ae03-67923b26cd3d",
+        "title": (
+            "Medusa ransomware tallies hundreds of new victims, says updated "
+            "advisory on group\u2019s tactics"
+        ),
+        "published_date": "2026-08-18",
+        "source": "feed",
+        "access_level": "public",
+        "url": "https://cyberscoop.com/medusa-ransomware-tactics-cisa-advisory/",
+        "access_hint": None,
+        "canonical_entities": [],
+        "claim_tags": [
+            "beyondtrust",
+            "Carbon Black",
+            "Cybercrime",
+            "Cybersecurity and Infrastructure Security Agency (CISA)",
+            "Department of Health and Human Services (HHS)",
+            "Federal Bureau of Investigation (FBI)",
+        ],
+        "abstract_stub": (
+            "A US government advisory (CISA, FBI, HHS) details updated Medusa "
+            "ransomware tactics. The group has added over 200 victims in the "
+            "past year, bringing"
+        ),
+        "match_score": 0.08,
+        "match_reasons": ["token_hits:1", "fresh_30d"],
+    }
+
+
+def off_topic_capsule():
+    """The other real capsule from the same response.
+
+    Kept because it is the honest face of this endpoint: a 0.08 match on
+    "token_hits:1, fresh_30d" for a report about counterfeit installers, which
+    is neither ransomware nor healthcare. Whatever the tab renders has to stay
+    readable when the matches are this weak.
+    """
+    return {
+        "report_id": 111945,
+        "report_uuid": "18dfc7d7-2eb6-5841-a458-7940f37e523a",
+        "title": (
+            "Counterfeit installers to system compromise: Tracking a deceptive "
+            "software download campaign"
+        ),
+        "published_date": "2026-09-01",
+        "source": "feed",
+        "access_level": "public",
+        "url": (
+            "https://www.microsoft.com/en-us/security/blog/2026/09/01/counterfeit-"
+            "installers-system-compromise-tracking-deceptive-software-download-campaign/"
+        ),
+        "access_hint": None,
+        "canonical_entities": [],
+        "claim_tags": ["Malware"],
+        "abstract_stub": (
+            "A malware campaign, likely by the \"Silver Fox\" group, is targeting "
+            "Chinese-speaking users with counterfeit software download websites. "
+            "The sites impersonate popular vendors to distribute malicious "
+            "installers that lead to"
+        ),
+        "match_score": 0.08,
+        "match_reasons": ["token_hits:1", "fresh_30d"],
+    }
+
+
+def intel_entity(entity_type="actor", canonical_id="actor--medusa",
+                 canonical_name="Medusa", confidence=0.85):
+    """One canonical_entities pivot.
+
+    Note `confidence` here, not `resolution_confidence` -- intel search scores
+    how strongly the report is associated with the entity, which is a
+    different measure from entity_resolution's match confidence, and the two
+    endpoints do use different key names for it.
+    """
+    return {
+        "entity_type": entity_type,
+        "canonical_id": canonical_id,
+        "canonical_name": canonical_name,
+        "confidence": confidence,
+    }
+
+
+def capsule_with_entities():
+    """A capsule carrying pivots. Derived from the schema, not captured.
+
+    No captured response included a capsule with canonical_entities, so this
+    body comes from the API's published openapi.json instead, and is validated
+    against it mechanically: IntelSearchItem declares
+    additionalProperties=false, and this passes that schema clean, so no key
+    is invented and none required is missing.
+
+    It exists so the pivot-rendering path is exercised rather than left
+    silently dead. Replace it with a capture when one is available -- a schema
+    says what is permitted, not what arrives.
+    """
+    capsule = public_capsule()
+    capsule["canonical_entities"] = [
+        intel_entity("actor", "actor--medusa", "Medusa", 0.85),
+        intel_entity("malware", "malware--medusa-ransomware", "Medusa Ransomware", 0.75),
+        intel_entity("cve", "cve--2024-57727", "CVE-2024-57727", 0.65),
+    ]
+    return capsule
+
+
+def restricted_capsule():
+    """A non-public capsule. Also schema-derived, not captured.
+
+    Every capsule in the capture was access_level="public" with a live url, so
+    the restricted branch (url null, access_hint naming the entitled path) had
+    no capture to draw on. Validated against the published schema, same as
+    capsule_with_entities above.
+    """
+    return {
+        "report_id": 111650,
+        "report_uuid": None,
+        "title": "Customer incident review: ransomware attempt against regional hospital network",
+        "published_date": "2026-08-14",
+        "source": "manual",
+        "access_level": "restricted",
+        "url": None,
+        "access_hint": "Restricted source; use entitled retrieval path.",
+        "canonical_entities": [],
+        "claim_tags": ["Cybercrime"],
+        "abstract_stub": "Customer incident review: ransomware attempt against regional hospital network",
+        "match_score": 0.41,
+        "match_reasons": ["token_hits:2"],
+    }
+
+
+def intel_search_body(items=None, *, query="ransomware targeting healthcare",
+                      max_results=20, truncated=False, warnings=None):
+    """The captured envelope, including the metadata block it really sends."""
+    items = [public_capsule(), off_topic_capsule()] if items is None else items
+    return {
+        "status": "ok" if items else "no_results",
+        "query": query,
+        "max_results": max_results,
+        "items": items,
+        "metadata": {
+            "item_count": len(items),
+            "truncated": truncated,
+            "warnings": list(warnings or []),
+        },
+    }
