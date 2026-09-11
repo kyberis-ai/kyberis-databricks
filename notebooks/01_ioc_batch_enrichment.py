@@ -181,7 +181,10 @@ else:
 # MAGIC %md
 # MAGIC ## Next steps
 # MAGIC - Join `output_table` back onto your detections on the `ioc` column.
-# MAGIC - Filter `urgency IN ('act_now', 'urgent')` for triage queues.
+# MAGIC - Filter `urgency IN ('today', 'this_week')` for triage queues and
+# MAGIC   order by `score` descending. Those are the two acting values of
+# MAGIC   `decision_urgency`; the other two, `monitor` and `ignore`, are the
+# MAGIC   rest of the scale.
 # MAGIC - Schedule this notebook as a job; pass `source_table`/`output_table`
 # MAGIC   as job parameters. Rows with `status != 'ok'` explain themselves —
 # MAGIC   retry `transport_error` rows, review `plan_limit` with your admin.
