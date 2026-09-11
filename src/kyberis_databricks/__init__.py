@@ -27,6 +27,14 @@ from .enrich import (
     display_order,
     resolve_entities,
 )
+from .intel import (
+    ENTITY_TYPE_LABELS,
+    IntelCapsule,
+    IntelEntity,
+    IntelSearchResults,
+    entity_type_label,
+    read_intel_search,
+)
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -46,6 +54,12 @@ __all__ = [
     "assess_iocs",
     "display_order",
     "resolve_entities",
+    "ENTITY_TYPE_LABELS",
+    "IntelCapsule",
+    "IntelEntity",
+    "IntelSearchResults",
+    "entity_type_label",
+    "read_intel_search",
 ]
 
 __version__ = "0.1.0"

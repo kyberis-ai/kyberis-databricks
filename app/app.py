@@ -24,13 +24,16 @@ import streamlit as st
 from kyberis_core import KyberisClient, KyberisClientConfig, KyberisClientError, tool_by_name
 from kyberis_databricks import (
     BearerTokenSession,
+    IntelCapsule,
     KyberisAuthError,
     KyberisPlanLimitError,
     assess_iocs,
     build_agent_context,
     display_order,
+    entity_type_label,
     load_credentials_from_env,
     new_run_id,
+    read_intel_search,
 )
 from kyberis_databricks.auth import base_url_from_env
 
@@ -69,6 +72,18 @@ ASSESSMENT_TOOL_BY_TYPE = {
     "cve": "cve_assessment",
     "actor": "actor_assessment",
 }
+
+
+def _count(number: int, noun: str) -> str:
+    """``1 capsule`` / ``2 capsules`` -- "capsule(s)" in a shipped UI reads as unfinished."""
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
+def _capsule_heading(capsule: IntelCapsule) -> str:
+    """Expander label: title, plus the date that tells you if it is stale."""
+    if capsule.published_date:
+        return f"{capsule.title}  ·  {capsule.published_date}"
+    return capsule.title
 
 
 @st.cache_resource
@@ -283,14 +298,66 @@ with intel_tab:
                     step_id="intel-search",
                 )
             body = response.body if isinstance(response.body, dict) else {}
-            results = body.get("results")
-            if not isinstance(results, list) or not results:
-                st.info("No intel capsules matched.")
-            for result in results if isinstance(results, list) else []:
-                if not isinstance(result, dict):
-                    continue
-                title = str(result.get("title") or result.get("summary") or "Intel capsule")
-                with st.expander(title):
-                    st.json(result)
+            results = read_intel_search(body)
+
+            if not results:
+                st.info("No intel capsules matched. Try a broader topic or a longer window.")
+            else:
+                # Only mention pivots when there are some: a capsule need not
+                # carry any, and a standing "0 entity pivots" reads as a fault
+                # rather than as absence.
+                caption = _count(len(results.capsules), "capsule")
+                if results.entity_count:
+                    caption += f", {_count(results.entity_count, 'entity pivot')}"
+                caption += "."
+                if results.truncated:
+                    caption += " More matched than the result cap allows — raise it or narrow the query."
+                st.caption(caption)
+                for warning in results.warnings:
+                    st.warning(warning)
+
+                for capsule in results.capsules:
+                    with st.expander(_capsule_heading(capsule)):
+                        # The date is already in the expander label; repeating
+                        # it here would just crowd out the match reasons.
+                        facts = " · ".join(
+                            part
+                            for part in (
+                                capsule.source,
+                                f"match {capsule.match_score:.2f}" if capsule.match_score is not None else None,
+                                ", ".join(capsule.match_reasons) or None,
+                            )
+                            if part
+                        )
+                        if facts:
+                            st.caption(facts)
+                        if capsule.abstract:
+                            st.markdown(capsule.abstract)
+
+                        # The pivots are the point of a capsule: these
+                        # canonical_ids paste straight into the Indicator
+                        # lookup tab, which a raw JSON dump did not make
+                        # obvious.
+                        for entity_type, entities in capsule.entities_by_type().items():
+                            names = ", ".join(entity.label for entity in entities)
+                            st.markdown(f"**{entity_type_label(entity_type)}:** {names}")
+                        if capsule.claim_tags:
+                            st.markdown(f"**Claim tags:** {', '.join(capsule.claim_tags)}")
+                        pivot_ids = [entity.canonical_id for entity in capsule.entities if entity.canonical_id]
+                        if pivot_ids:
+                            st.caption(
+                                "Pivot on these: `" + "`, `".join(pivot_ids)
+                                + "` in the Indicator lookup tab."
+                            )
+
+                        if capsule.is_public:
+                            st.markdown(f"[Open source report]({capsule.url})")
+                        elif capsule.access_hint:
+                            st.caption(capsule.access_hint)
+
+            # Nested expanders are a Streamlit error, so the raw envelope
+            # sits alongside the capsules rather than inside one.
+            with st.expander("intel_search response"):
+                st.json(body)
         except Exception as error:
             show_error(error)
