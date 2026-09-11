@@ -1,6 +1,6 @@
 [project]
 name = "kyberis-databricks"
-version = "0.1.0"
+version = "1.0.0"
 description = "Kyberis threat intelligence for Databricks: enrichment helpers, example notebooks, and a Databricks App"
 readme = "README.md"
 # Databricks Runtime 13.3 LTS+ ships Python 3.10; Databricks Apps runs 3.11.
