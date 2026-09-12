@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
+from urllib.parse import urlparse
 
 from kyberis_core import KyberisClient
 
@@ -31,6 +32,11 @@ DEFAULT_SECRET_KEY_ID = "kyberis-api-key-id"
 DEFAULT_SECRET_KEY_SECRET = "kyberis-api-key-secret"
 
 TOKEN_ENDPOINT = "/v2/auth/token"
+
+# The only hosts a plaintext base URL is legitimate for: a developer running
+# the app against a local mock. Everywhere else the URL carries the API key on
+# the mint call and a bearer token on every call after it.
+PLAINTEXT_OK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Refresh this many seconds before the token's stated expiry so an in-flight
 # batch never runs across the boundary with a just-expired token.
@@ -110,8 +116,32 @@ def load_credentials_from_secrets(
 
 
 def base_url_from_env(environ: Mapping[str, str] | None = None) -> str:
+    """The Kyberis API base URL, defaulting to :data:`DEFAULT_BASE_URL`.
+
+    A plaintext override is rejected rather than honoured. ``KYBERIS_API_BASE_URL``
+    decides where the API key travels on token mint and where every bearer token
+    goes after that, so an ``http://`` value would put both on the wire in clear.
+    Localhost is exempt, so a developer can point the app at a local mock.
+    """
     env = os.environ if environ is None else environ
-    return str(env.get(ENV_BASE_URL) or "").strip() or DEFAULT_BASE_URL
+    base_url = str(env.get(ENV_BASE_URL) or "").strip()
+    if not base_url:
+        return DEFAULT_BASE_URL
+
+    parsed = urlparse(base_url)
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    if scheme == "https" or (scheme == "http" and host in PLAINTEXT_OK_HOSTS):
+        return base_url
+
+    # Name the scheme and host only, never the value: an override can carry
+    # credentials in its userinfo, and this message reaches notebook cells,
+    # job output and app logs.
+    raise KyberisAuthError(
+        f"{ENV_BASE_URL} must be an https:// URL. Got scheme "
+        f"'{scheme or '(none)'}' for host '{host or '(none)'}'. Plaintext would send "
+        "the Kyberis API key and every bearer token in the clear."
+    )
 
 
 class BearerTokenSession:

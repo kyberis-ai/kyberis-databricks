@@ -61,4 +61,8 @@ minted just before revocation stays valid until it expires (≤30 minutes).
 ## Base URL
 
 Optional `KYBERIS_API_BASE_URL` (env var, or leave the code default
-`https://api.kyberis.ai`). Only https URLs should ever be used.
+`https://api.kyberis.ai`). Only https is accepted, and this is enforced rather
+than advised: a plaintext override raises at startup instead of being honoured,
+because this URL is where the API key travels on token mint and where every
+bearer token goes after that. `http://localhost` and `http://127.0.0.1` are
+exempt, so the app can be pointed at a local mock during development.

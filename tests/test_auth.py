@@ -65,6 +65,33 @@ class TestLoaders:
             "https://api.example.test"
         )
 
+    def test_base_url_allows_plaintext_localhost_only(self):
+        for url in ("http://localhost:8000", "http://127.0.0.1:8000"):
+            assert base_url_from_env({"KYBERIS_API_BASE_URL": url}) == url
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://api.example.test",  # plaintext to a remote host
+            "http://localhost.evil.test",  # host merely *starts* with localhost
+            "api.kyberis.ai",  # no scheme at all
+            "ftp://api.example.test",
+        ],
+    )
+    def test_base_url_rejects_anything_not_https(self, url):
+        with pytest.raises(KyberisAuthError):
+            base_url_from_env({"KYBERIS_API_BASE_URL": url})
+
+    def test_base_url_error_never_echoes_userinfo(self):
+        # An override can carry credentials; the error reaches notebook cells
+        # and job output, so it must name the scheme and host and nothing else.
+        with pytest.raises(KyberisAuthError) as raised:
+            base_url_from_env({"KYBERIS_API_BASE_URL": "http://kid:sup3r-secret@api.example.test"})
+        message = str(raised.value)
+        assert "sup3r-secret" not in message
+        assert "kid" not in message
+        assert "api.example.test" in message
+
 
 class TestBearerTokenSession:
     def _session(self, fake_client, fake_clock, **kwargs):

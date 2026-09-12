@@ -62,4 +62,4 @@ __all__ = [
     "read_intel_search",
 ]
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
